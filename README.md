@@ -188,7 +188,7 @@ qwdtt://config?name=Дом&peer=1.2.3.4:56000&hashes=хеш1,хеш2&workers=18&
 
 ## Сервер
 
-`server.go` → бинарь `wdtt-server`: DTLS, WRAP/RTP, выдача WG-конфига, `/etc/wdtt/passwords.json`, Telegram-бот.
+`server/` → бинарь `wdtt-server`: DTLS, WRAP/RTP, выдача WG-конфига, `/etc/wdtt/passwords.json`, Telegram-бот.
 
 Готовый public-образ для `linux/amd64` публикуется в GHCR при изменении серверной части:
 
@@ -230,7 +230,7 @@ export ANDROID_NDK_HOME=/path/to/android-ndk
 ```text
 app/           Kotlin + Compose, VPN, WebView (VK auth, капча)
 go_client/     Нативный клиент → libclient.so
-server.go      Серверная часть (совместим с WDTT)
+server/        Серверная часть (совместима с WDTT)
 scripts/       Сборка Go под Android ABI
 ```
 
