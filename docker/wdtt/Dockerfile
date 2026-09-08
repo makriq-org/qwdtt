@@ -3,12 +3,12 @@ FROM golang:1.25-bookworm AS builder
 WORKDIR /src
 
 COPY go.mod ./
-COPY server.go ./
-COPY admin_api.go ./
+COPY go.sum ./
+COPY server ./server
 
-RUN go mod tidy
+RUN go mod download
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/wdtt-server .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/wdtt-server ./server
 
 FROM debian:bookworm-slim
 

@@ -3,6 +3,11 @@ name: Android debug APK
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: android-debug-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -15,37 +20,34 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Set up Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9
         with:
           distribution: temurin
           java-version: '17'
           cache: gradle
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version: '1.26.x'
           cache-dependency-path: |
             go.sum
             go_client/go.sum
 
-      - name: Build Linux server asset
-        run: go build -trimpath -o app/src/main/assets/server .
-
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
 
       - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+        run: sdkmanager "platforms;android-35" "build-tools;36.0.0" "ndk;28.0.13004108"
 
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug -PtargetAbis=arm64-v8a --no-daemon
 
       - name: Upload debug APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: app-arm64-v8a-debug
           path: app/build/outputs/apk/debug/app-arm64-v8a-debug.apk

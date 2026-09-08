@@ -6,8 +6,9 @@ on:
     branches:
       - master
     paths:
-      - server.go
+      - server/**
       - go.mod
+      - go.sum
       - docker/wdtt/**
       - .github/workflows/publish-server-image.yml
   workflow_dispatch:

@@ -11,13 +11,9 @@ import (
 	"time"
 )
 
-
 const workersPerGroup = 9
 
-// allocateGateInterval — минимальный интервал между TURN Allocate-запросами
-// внутри одной группы воркеров (см. комментарий у allocateTicker в
-// WorkerGroup). Тот же порядок величины, что у free-turn-proxy (200ms).
-const allocateGateInterval = 200 * time.Millisecond
+const allocateGateInterval = 100 * time.Millisecond
 
 // WorkerGroup:
 // Запускает 9 потоков с одними кредами. Ротации нет — работает до смерти воркеров.
@@ -118,7 +114,7 @@ func WorkerGroup(
 	// Сигнализируем следующей группе, что мы успешно запустились (креды получены + фора)
 	if signalReady != nil {
 		go func() {
-			delayMs := 1000 + rand.Intn(500)
+			delayMs := 500 + rand.Intn(250)
 			time.Sleep(time.Duration(delayMs) * time.Millisecond)
 			close(signalReady)
 			log.Printf("[ГРУППА #%d] Успешный старт! Передача эстафеты следующей группе...", groupID)
@@ -139,8 +135,7 @@ func WorkerGroup(
 	for i, wid := range workerIDs {
 		wg.Add(1)
 
-		// Stagger: 200мс между воркерами
-		workerDelay := time.Duration(i) * 200 * time.Millisecond
+		workerDelay := time.Duration(i) * 75 * time.Millisecond
 
 		go func(wid int, delay time.Duration) {
 			defer wg.Done()
@@ -179,6 +174,7 @@ func WorkerGroup(
 					getConf, cc, wid, &credsSnapshot, deviceID, password, stats, allocateTicker.C)
 
 				quotaRetry := false
+				fastRetry := false
 				if getConf {
 					if configDelivered {
 						atomic.StoreInt32(&configSent, 1)
@@ -193,6 +189,9 @@ func WorkerGroup(
 					}
 					errStr := sessErr.Error()
 					errStrLower := strings.ToLower(errStr)
+					fastRetry = strings.Contains(errStrLower, "broken pipe") ||
+						strings.Contains(errStrLower, "connection reset by peer") ||
+						strings.Contains(errStrLower, "unexpected eof")
 
 					turnAllocAttrMissing := strings.Contains(errStrLower, "turn allocate") &&
 						strings.Contains(errStrLower, "attribute not found")
@@ -250,6 +249,8 @@ func WorkerGroup(
 				retryDelay := time.Duration(5+rand.Intn(11)) * time.Second
 				if quotaRetry {
 					retryDelay = time.Duration(30+rand.Intn(31)) * time.Second
+				} else if fastRetry {
+					retryDelay = time.Duration(1+rand.Intn(3)) * time.Second
 				}
 				select {
 				case <-time.After(retryDelay):
@@ -304,16 +305,16 @@ func normalizeVKJoinHash(input string) string {
 
 // TurnParams — конфигурация TURN
 type TurnParams struct {
-	Host    string
-	Port    string
-	Hashes  []string
-	WrapKey []byte // Password-derived WRAP key (32 bytes), nil = disabled
+	Host     string
+	Port     string
+	Hashes   []string
+	WrapKey  []byte // Password-derived WRAP key (32 bytes), nil = disabled
 	ObfsMode string // "audio" or "video" — RTP masking mode
 	// NoDTLS: пропустить DTLS и идти RTP-obfs AEAD напрямую поверх TURN relay.
 	// Требует сервер, который умеет принимать прямые (без DTLS) сессии на
-	// отдельном порту/слушателе — см. server.go -listen-direct.
+	// отдельном порту/слушателе — см. server/main.go -listen-direct.
 	NoDTLS bool
-	// RawMode: raw-IP без WireGuard (см. server.go -listen-raw, handleConnRaw).
+	// RawMode: raw-IP без WireGuard (см. server/main.go -listen-raw, handleConnRaw).
 	// Подразумевает NoDTLS — сервер на -listen-raw DTLS не понимает.
 	RawMode bool
 	// TCPTransport: соединяться с TURN-relay по TCP вместо UDP (см.
@@ -330,5 +331,3 @@ type Credentials struct {
 	TurnURLs      []string
 	CacheStreamID int
 }
-
-
