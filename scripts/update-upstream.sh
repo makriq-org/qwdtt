@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-FORK_REPOSITORY="makriq-org/proxy-turn-vk-android"
+FORK_REPOSITORY="makriq-org/qwdtt"
 FORK_BRANCH="master"
 UPSTREAM_REPOSITORY="SpaceNeuroX/proxy-turn-vk-android"
 UPSTREAM_BRANCH="master"
