@@ -12,7 +12,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o
 
 FROM debian:bookworm-slim
 
-LABEL org.opencontainers.image.source="https://github.com/makriq-org/proxy-turn-vk-android" \
+LABEL org.opencontainers.image.source="https://github.com/makriq-org/qwdtt" \
       org.opencontainers.image.description="qWDTT server"
 
 RUN apt-get update \
