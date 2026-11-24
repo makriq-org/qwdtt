@@ -32,13 +32,12 @@ const (
 )
 
 type socksFileConfig struct {
-	Listen    string `json:"listen"`
-	Username  string `json:"username"`
-	Password  string `json:"password"`
-	Auth      *bool  `json:"auth"`
-	UDP       *bool  `json:"udp"`
-	UDPToken  *bool  `json:"udp-token"`
-	UDPMaxAge string `json:"udp-idle-timeout"`
+	Listen   string `json:"listen"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Auth     *bool  `json:"auth"`
+	UDP      *bool  `json:"udp"`
+	UDPToken *bool  `json:"udp-token"`
 }
 
 type clientFileConfig struct {
@@ -66,18 +65,17 @@ type clientFileConfig struct {
 	SocksPass string           `json:"socks-password"`
 	UDPToken  *bool            `json:"udp-token"`
 
-	DeviceID     string   `json:"device-id"`
-	CaptchaMode  string   `json:"captcha-mode"`
-	VKAuth       string   `json:"vk-auth"`
-	VKAnonPath   string   `json:"vk-anon-path"`
-	VKCredsFile  string   `json:"vk-creds-file"`
-	GoDNS        string   `json:"go-dns"`
-	DNSFallback  []string `json:"dns-fallback"`
-	DNSServer    string   `json:"dns-server"`
-	TunFdSock    string   `json:"tun-fd-sock"`
-	NoDTLS       *bool    `json:"notls"`
-	RawMode      *bool    `json:"raw"`
-	LogNoSecrets *bool    `json:"log-no-secrets"`
+	DeviceID    string   `json:"device-id"`
+	CaptchaMode string   `json:"captcha-mode"`
+	VKAuth      string   `json:"vk-auth"`
+	VKAnonPath  string   `json:"vk-anon-path"`
+	VKCredsFile string   `json:"vk-creds-file"`
+	GoDNS       string   `json:"go-dns"`
+	DNSFallback []string `json:"dns-fallback"`
+	DNSServer   string   `json:"dns-server"`
+	TunFdSock   string   `json:"tun-fd-sock"`
+	NoDTLS      *bool    `json:"notls"`
+	RawMode     *bool    `json:"raw"`
 }
 
 // readClientConfig читает и валидирует файл. Секреты не логируются.

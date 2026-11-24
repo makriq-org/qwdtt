@@ -235,7 +235,6 @@ func (s *socksServer) authenticate(conn net.Conn) error {
 type socksTarget struct {
 	host string
 	port uint16
-	raw  []byte
 }
 
 func readSocksRequest(conn net.Conn) (byte, socksTarget, error) {
@@ -258,14 +257,14 @@ func readSocksAddress(r io.Reader, atyp byte) (socksTarget, error) {
 			return socksTarget{}, err
 		}
 		ip := netip.AddrFrom4([4]byte(buf[:4]))
-		return socksTarget{host: ip.String(), port: binary.BigEndian.Uint16(buf[4:]), raw: append([]byte{atyp}, buf...)}, nil
+		return socksTarget{host: ip.String(), port: binary.BigEndian.Uint16(buf[4:])}, nil
 	case socksAtypIPv6:
 		buf := make([]byte, 16+2)
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return socksTarget{}, err
 		}
 		ip := netip.AddrFrom16([16]byte(buf[:16]))
-		return socksTarget{host: ip.String(), port: binary.BigEndian.Uint16(buf[16:]), raw: append([]byte{atyp}, buf...)}, nil
+		return socksTarget{host: ip.String(), port: binary.BigEndian.Uint16(buf[16:])}, nil
 	case socksAtypDomain:
 		length := make([]byte, 1)
 		if _, err := io.ReadFull(r, length); err != nil {
@@ -279,7 +278,7 @@ func readSocksAddress(r io.Reader, atyp byte) (socksTarget, error) {
 			return socksTarget{}, err
 		}
 		host := string(buf[:len(buf)-2])
-		return socksTarget{host: host, port: binary.BigEndian.Uint16(buf[len(buf)-2:]), raw: append([]byte{atyp, length[0]}, buf...)}, nil
+		return socksTarget{host: host, port: binary.BigEndian.Uint16(buf[len(buf)-2:])}, nil
 	default:
 		return socksTarget{}, errors.New("unsupported SOCKS address type")
 	}
