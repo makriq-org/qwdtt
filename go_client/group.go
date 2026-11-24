@@ -124,8 +124,15 @@ func WorkerGroup(
 			hashCursor = (hashCursor + 1) % len(tp.Hashes)
 			log.Printf("[ГРУППА #%d] Переключаюсь на следующий VK-хеш", groupID)
 		}
+		delay := workerRetryDelay(attempt)
+		lower := strings.ToLower(err.Error())
+		if strings.Contains(lower, "captcha") || strings.Contains(lower, "lockout") {
+			// VK ограничивает частые попытки. Долгий backoff не даёт
+			// продлевать блокировку и оставляет узел в недоступности.
+			delay = time.Minute
+		}
 		select {
-		case <-time.After(workerRetryDelay(attempt)):
+		case <-time.After(delay):
 		case <-ctx.Done():
 			return
 		}
