@@ -107,6 +107,22 @@ func sanitizeHashCheckMessage(message string) string {
 	return message
 }
 
+// failConfig завершает процесс, если конфигурацию туннеля применить не удалось.
+//
+// Конфиг от VK доставляется один раз: после configSent повторный запрос не
+// выполняется. Если просто вернуться из обработчика, локальный SOCKS5-порт
+// останется занятым, но serveSocks5 не запустится, и супервизор будет видеть
+// живой процесс без рабочего транспорта. Ненулевой выход заставляет
+// FlClashM перезапустить узел.
+func failConfig(ctx context.Context, format string, args ...any) {
+	if ctx.Err() != nil {
+		return
+	}
+	log.Printf(format, args...)
+	log.Println("[КЛИЕНТ] Конфигурация туннеля не применена, завершаю процесс")
+	os.Exit(1)
+}
+
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 
@@ -506,14 +522,14 @@ func main() {
 			if strings.HasPrefix(tunnelConf, "RAWCONF:") {
 				ip, tunnelDNS, mtu, err := parseRawConf(tunnelConf)
 				if err != nil {
-					log.Printf("[RAW] %v", err)
+					failConfig(ctx, "[RAW] %v", err)
 					return
 				}
 				log.Printf("[RAW] Конфиг получен: IP=%s MTU=%d", ip, mtu)
 
 				if activeConnMode == "rawtun" {
 					if *tunFdSock == "" {
-						log.Println("[RAW] Ошибка: -tun-fd-sock не указан")
+						failConfig(ctx, "[RAW] Ошибка: -tun-fd-sock не указан")
 						return
 					}
 					log.Println("[RAW] Ожидание TUN fd от Android...")
@@ -544,12 +560,12 @@ func main() {
 				}
 				endpoints, err := effectiveDNS(opts.DNSServer, opts.DNSFallback, tunnelDNS)
 				if err != nil {
-					log.Printf("[SOCKS] DNS: %v", err)
+					failConfig(ctx, "[SOCKS] DNS: %v", err)
 					return
 				}
 				tunnel, err := createNetstackTunnel([]netip.Addr{ip}, dnsAddresses(endpoints), mtu)
 				if err != nil {
-					log.Printf("[SOCKS] netstack: %v", err)
+					failConfig(ctx, "[SOCKS] netstack: %v", err)
 					return
 				}
 				defer tunnel.Close()
@@ -557,7 +573,7 @@ func main() {
 				resolver := newTunnelResolver(tunnel.Net, endpoints)
 				log.Printf("[SOCKS] raw-IP netstack готов (addr=%s dns=%v mtu=%d)", ip, endpoints, mtu)
 				if err := startSocksServer(ctx, opts, socksListener, tunnel.Net, resolver); err != nil {
-					log.Printf("[SOCKS] Сервер остановлен: %v", err)
+					failConfig(ctx, "[SOCKS] Сервер остановлен: %v", err)
 				}
 				return
 			}
@@ -594,24 +610,24 @@ func main() {
 			if activeConnMode == "socks" {
 				wgConf, err := parseWgQuick(finalConf)
 				if err != nil {
-					log.Printf("[SOCKS] Ошибка WG-конфига: %v", err)
+					failConfig(ctx, "[SOCKS] Ошибка WG-конфига: %v", err)
 					return
 				}
 				endpoints, err := effectiveDNS(opts.DNSServer, opts.DNSFallback, wgConf.dns)
 				if err != nil {
-					log.Printf("[SOCKS] DNS: %v", err)
+					failConfig(ctx, "[SOCKS] DNS: %v", err)
 					return
 				}
 				dev, tnet, err := startUserspaceWireGuardConfig(wgConf, dnsAddresses(endpoints))
 				if err != nil {
-					log.Printf("[SOCKS] Ошибка userspace WG: %v", err)
+					failConfig(ctx, "[SOCKS] Ошибка userspace WG: %v", err)
 					return
 				}
 				defer dev.Close()
 				resolver := newTunnelResolver(tnet, endpoints)
 				log.Printf("[SOCKS] WireGuard netstack готов (addr=%v dns=%v)", wgConf.addresses, endpoints)
 				if err := startSocksServer(ctx, opts, socksListener, tnet, resolver); err != nil {
-					log.Printf("[SOCKS] Сервер остановлен: %v", err)
+					failConfig(ctx, "[SOCKS] Сервер остановлен: %v", err)
 				}
 			}
 		case <-ctx.Done():
