@@ -44,8 +44,15 @@ func TestEffectiveDNSPriority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(system) != 1 || system[0].addr.String() != "9.9.9.9" {
-		t.Fatalf("system DNS must use fallback: %v", system)
+	if len(system) != 1 || system[0].addr.String() != "8.8.8.8" {
+		t.Fatalf("system DNS must prefer the tunnel resolver: %v", system)
+	}
+	fallbackOnly, err := effectiveDNS("system", "9.9.9.9:53", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fallbackOnly) != 1 || fallbackOnly[0].addr.String() != "9.9.9.9" {
+		t.Fatalf("fallback DNS: %v", fallbackOnly)
 	}
 	tunnel, err := effectiveDNS("system", "", []netip.Addr{netip.MustParseAddr("8.8.8.8")})
 	if err != nil {

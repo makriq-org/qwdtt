@@ -221,16 +221,10 @@ func effectiveDNS(explicit, fallback string, tunnelProvided []netip.Addr) ([]dns
 	if strings.TrimSpace(explicit) != "" && !strings.EqualFold(strings.TrimSpace(explicit), "system") {
 		return parseDNSEndpoints(explicit)
 	}
-	fallback = strings.TrimSpace(fallback)
-	if fallback != "" {
-		if endpoints, err := parseDNSEndpoints(fallback); err == nil && len(endpoints) > 0 {
-			return endpoints, nil
-		}
-	}
 	// DNS, выданный сервером (WireGuard/RAWCONF), гарантированно достижим
 	// внутри туннеля. Физический DNS телефона (10.0.2.3, DNS оператора)
-	// находится вне туннеля и для netstack бесполезен, поэтому используется
-	// только как последний резерв.
+	// находится вне туннеля и для netstack бесполезен, поэтому он идёт после
+	// серверного резолвера.
 	var result []dnsEndpoint
 	for _, ip := range tunnelProvided {
 		if ip.IsValid() && !ip.IsUnspecified() {
@@ -239,6 +233,12 @@ func effectiveDNS(explicit, fallback string, tunnelProvided []netip.Addr) ([]dns
 	}
 	if len(result) > 0 {
 		return result, nil
+	}
+	fallback = strings.TrimSpace(fallback)
+	if fallback != "" {
+		if endpoints, err := parseDNSEndpoints(fallback); err == nil && len(endpoints) > 0 {
+			return endpoints, nil
+		}
 	}
 	if endpoints := systemDNSEndpoints(); len(endpoints) > 0 {
 		return endpoints, nil
