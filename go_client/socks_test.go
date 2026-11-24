@@ -252,6 +252,16 @@ func TestSocksUDPTokenRoundTrip(t *testing.T) {
 	defer client.Close()
 
 	frame := append([]byte(token), encodeSocksDatagram(netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), port), []byte("ping"))...)
+	// Посторонний процесс с неверным токеном не должен захватить ассоциацию.
+	attacker, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(bound))
+	if err != nil {
+		t.Fatal(err)
+	}
+	badFrame := append([]byte("ffffffffffffffffffffffffffffffff"), frame[len(token):]...)
+	if _, err = attacker.Write(badFrame); err != nil {
+		t.Fatal(err)
+	}
+	_ = attacker.Close()
 	if _, err = client.Write(frame); err != nil {
 		t.Fatal(err)
 	}

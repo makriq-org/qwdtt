@@ -14,11 +14,14 @@ import (
 
 // startSocksServer связывает SOCKS5 с уже поднятым netstack. Все dial'ы идут
 // через него, поэтому источником пакетов остаётся выбранный транспорт.
-func startSocksServer(ctx context.Context, opts *clientOptions, tnet *netstack.Net, resolver *tunnelResolver) error {
+func startSocksServer(ctx context.Context, opts *clientOptions, listener net.Listener, tnet *netstack.Net, resolver *tunnelResolver) error {
 	if tnet == nil || resolver == nil {
 		return errors.New("SOCKS5 requires netstack")
 	}
-	return runSocks5Server(ctx, socksServerConfig{
+	if listener == nil {
+		return errors.New("SOCKS5 listener is unavailable")
+	}
+	return serveSocks5(ctx, listener, socksServerConfig{
 		Listen:      opts.SocksAddr,
 		Username:    opts.SocksUser,
 		Password:    opts.SocksPass,

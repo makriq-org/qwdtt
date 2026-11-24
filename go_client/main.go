@@ -474,6 +474,16 @@ func main() {
 	diagCfg.TunnelReceiving = tunnelReceivingRecently
 	go diagWatchdog(ctx, diagCfg, stats, &pauseFlag, *diagAuto, *diagTrigger)
 
+	var socksListener net.Listener
+	if activeConnMode == "socks" {
+		socksListener, err = listenTCP(*socksAddr)
+		if err != nil {
+			log.Fatalf("[SOCKS] Не удалось занять порт %s: %v", *socksAddr, err)
+		}
+		stop := context.AfterFunc(ctx, func() { _ = socksListener.Close() })
+		defer stop()
+	}
+
 	var disp *Dispatcher
 	if rawMode {
 		// netstack TUN подключается после RAWCONF; до этого диспетчер ждёт.
@@ -546,7 +556,7 @@ func main() {
 				disp.AttachPacketConn(newTunPacketConn(tunnel))
 				resolver := newTunnelResolver(tunnel.Net, endpoints)
 				log.Printf("[SOCKS] raw-IP netstack готов (addr=%s dns=%v mtu=%d)", ip, endpoints, mtu)
-				if err := startSocksServer(ctx, opts, tunnel.Net, resolver); err != nil {
+				if err := startSocksServer(ctx, opts, socksListener, tunnel.Net, resolver); err != nil {
 					log.Printf("[SOCKS] Сервер остановлен: %v", err)
 				}
 				return
@@ -600,7 +610,7 @@ func main() {
 				defer dev.Close()
 				resolver := newTunnelResolver(tnet, endpoints)
 				log.Printf("[SOCKS] WireGuard netstack готов (addr=%v dns=%v)", wgConf.addresses, endpoints)
-				if err := startSocksServer(ctx, opts, tnet, resolver); err != nil {
+				if err := startSocksServer(ctx, opts, socksListener, tnet, resolver); err != nil {
 					log.Printf("[SOCKS] Сервер остановлен: %v", err)
 				}
 			}

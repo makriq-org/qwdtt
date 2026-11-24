@@ -109,6 +109,25 @@ func TestParseDNSResponse(t *testing.T) {
 	}
 }
 
+func TestParseTruncatedDNSResponseWithoutAnswers(t *testing.T) {
+	name, _ := dnsmessage.NewName("example.com.")
+	b := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: 77, Response: true, Truncated: true})
+	if err := b.StartQuestions(); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Question(dnsmessage.Question{Name: name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET}); err != nil {
+		t.Fatal(err)
+	}
+	packet, err := b.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, truncated, err := parseDNSResponse(packet, 77, "example.com")
+	if !truncated || err == nil {
+		t.Fatalf("truncated=%v err=%v", truncated, err)
+	}
+}
+
 func TestTunnelResolverIPLiteral(t *testing.T) {
 	resolver := newTunnelResolver(nil, nil)
 	addr, err := resolver.Resolve(context.Background(), "127.0.0.1")

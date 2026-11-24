@@ -387,6 +387,7 @@ type udpAssociation struct {
 	token    []byte
 	socket   *net.UDPConn
 	client   netip.AddrPort
+	clientIP netip.Addr
 	clientMu sync.Mutex
 
 	mu      sync.Mutex
@@ -416,6 +417,11 @@ func (a *udpAssociation) listen(control net.Conn) error {
 		return err
 	}
 	a.socket = udp
+	if host, _, splitErr := net.SplitHostPort(control.RemoteAddr().String()); splitErr == nil {
+		if ip, ipOK := parseIPLiteral(host); ipOK {
+			a.clientIP = ip.Unmap()
+		}
+	}
 	bound := udp.LocalAddr().(*net.UDPAddr)
 	boundIP, _ := netip.AddrFromSlice(bound.IP)
 	writeSocksReply(control, socksRepSuccess, netip.AddrPortFrom(boundIP.Unmap(), uint16(bound.Port)))
@@ -439,15 +445,17 @@ func (a *udpAssociation) listen(control net.Conn) error {
 		}
 		clientAddr, _ := netip.AddrFromSlice(addr.IP)
 		client := netip.AddrPortFrom(clientAddr.Unmap(), uint16(addr.Port))
-		if !a.acceptClient(client) {
-			continue
-		}
 		payload := buffer[:n]
+		// Сначала проверяем токен: посторонний датаграм не должен захватить
+		// ассоциацию и вытеснить настоящего клиента.
 		if len(a.token) > 0 {
 			if len(payload) <= len(a.token) || subtle.ConstantTimeCompare(payload[:len(a.token)], a.token) != 1 {
 				continue
 			}
 			payload = payload[len(a.token):]
+		}
+		if !a.acceptClient(client) {
+			continue
 		}
 		a.handleDatagram(client, payload)
 	}
@@ -456,6 +464,9 @@ func (a *udpAssociation) listen(control net.Conn) error {
 func (a *udpAssociation) acceptClient(client netip.AddrPort) bool {
 	a.clientMu.Lock()
 	defer a.clientMu.Unlock()
+	if a.clientIP.IsValid() && client.Addr() != a.clientIP {
+		return false
+	}
 	if a.client.Addr().IsValid() {
 		return a.client == client
 	}

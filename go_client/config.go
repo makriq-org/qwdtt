@@ -386,6 +386,9 @@ func (o *clientOptions) validate() error {
 	if tunnel == tunnelRawIP && o.Mode != "socks" && o.Mode != "rawtun" {
 		return errors.New("raw-ip tunnel requires socks or rawtun mode")
 	}
+	if o.Password != "" && (strings.Contains(o.Password, "|") || o.Password != strings.TrimSpace(o.Password)) {
+		return errors.New("connection password must not contain | or edge spaces")
+	}
 	if o.Workers < 1 {
 		return errors.New("workers must be at least 1")
 	}

@@ -371,16 +371,17 @@ func (r *tunnelResolver) exchange(ctx context.Context, server dnsEndpoint, query
 		return netip.Addr{}, 0, err
 	}
 	addr, ttl, truncated, err := parseDNSResponse(response[:n], id, host)
-	if err != nil {
-		return netip.Addr{}, 0, err
-	}
 	if truncated {
-		// Ответ обрезан — повторяем по TCP через тот же туннель.
-		tcpAddr, ttl2, err := r.exchangeTCP(ctx, server, query, id, host)
-		if err != nil {
-			return netip.Addr{}, 0, err
+		// Ответ обрезан — повторяем по TCP через тот же туннель. Усечённый
+		// ответ часто не содержит A-записи, поэтому проверка TC идёт до err.
+		tcpAddr, ttl2, tcpErr := r.exchangeTCP(ctx, server, query, id, host)
+		if tcpErr != nil {
+			return netip.Addr{}, 0, tcpErr
 		}
 		return tcpAddr, ttl2, nil
+	}
+	if err != nil {
+		return netip.Addr{}, 0, err
 	}
 	return addr, ttl, nil
 }
