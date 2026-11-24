@@ -620,6 +620,19 @@ func solveCaptchaBySelectedMode(
 	}
 
 	switch getCaptchaMode() {
+	case "native":
+		log.Printf("[STREAM %d] [КАПЧА] NATIVE: только Go v2, без WebView (attempt %d)", streamID, attempt)
+		token, solveErr := solveVkCaptchaV2Attempts(ctx, captchaErr, client, profile, savedProfile, 3)
+		if solveErr == nil {
+			return token, nil
+		}
+		if ctx.Err() != nil {
+			return "", solveErr
+		}
+		if isCaptchaSessionDead(solveErr) {
+			return "", markCaptchaSessionExpired(streamID)
+		}
+		return "", fmt.Errorf("native captcha failed: %w", solveErr)
 	case "wv":
 		log.Printf("[STREAM %d] [КАПЧА] WBV: режим из настроек Android (attempt %d)", streamID, attempt)
 		return requestWebViewCaptcha(streamID, captchaErr, "selected", captchaSelectedWebViewTimeout)

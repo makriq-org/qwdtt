@@ -13,7 +13,7 @@ func TestDoHResolverLookupHost(t *testing.T) {
 	cases := []string{"doh-cloudflare", "doh-google", "doh-yandex"}
 	for _, arg := range cases {
 		t.Run(arg, func(t *testing.T) {
-			setupGlobalResolver(arg)
+			setupGlobalResolver(arg, nil)
 			addrs, err := net.DefaultResolver.LookupHost(context.Background(), "login.vk.ru")
 			if err != nil {
 				t.Fatalf("lookup failed: %v", err)

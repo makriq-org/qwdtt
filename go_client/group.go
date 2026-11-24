@@ -94,32 +94,52 @@ func WorkerGroup(
 		time.Sleep(1 * time.Second)
 	}
 
-	hash := tp.Hashes[hashIndex%len(tp.Hashes)]
-	shortHash := hash
-	if len(shortHash) > 8 {
-		shortHash = shortHash[:8]
+	hashCursor := hashIndex % len(tp.Hashes)
+
+	shortHashOf := func(hash string) string {
+		if len(hash) > 8 {
+			return hash[:8]
+		}
+		return hash
 	}
-	log.Printf("[ГРУППА #%d] Запрос кредов (хеш: %s...)", groupID, shortHash)
 
 	credStreamID := groupID * 100
-	user, pass, turnURLs, err := GetCreds(ctx, hash, credStreamID)
 	var creds *Credentials
-	if err == nil {
-		creds = &Credentials{User: user, Pass: pass, TurnURLs: turnURLs, CacheStreamID: credStreamID}
-	} else {
-		log.Printf("[ГРУППА #%d] Ошибка кредов: %v", groupID, err)
+	attempt := 0
+	for {
+		hash := tp.Hashes[hashCursor]
+		log.Printf("[ГРУППА #%d] Запрос кредов (хеш: %s...)", groupID, shortHashOf(hash))
+		user, pass, turnURLs, err := GetCreds(ctx, hash, credStreamID)
+		if err == nil {
+			creds = &Credentials{User: user, Pass: pass, TurnURLs: turnURLs, CacheStreamID: credStreamID}
+			break
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		attempt++
+		log.Printf("[ГРУППА #%d] Ошибка кредов (хеш %s...): %v", groupID, shortHashOf(hash), err)
 		markDiagCredsFailed()
-		return
+		if len(tp.Hashes) > 1 {
+			hashCursor = (hashCursor + 1) % len(tp.Hashes)
+			log.Printf("[ГРУППА #%d] Переключаюсь на следующий VK-хеш", groupID)
+		}
+		select {
+		case <-time.After(workerRetryDelay(attempt)):
+		case <-ctx.Done():
+			return
+		}
 	}
 
 	log.Printf("[ГРУППА #%d] Креды OK, TURN: %v, %d воркеров", groupID, creds.TurnURLs, len(workerIDs))
 	markDiagCredsReady()
 
-	var configRequestInFlight int32
-	var wg sync.WaitGroup
 	var credsMu sync.RWMutex
 	var refreshMu sync.Mutex
 	var lastCredRefresh atomic.Int64
+	var hashMu sync.Mutex
+	var lastHashRotate atomic.Int64
+	var rotateCredsLocked func(string) bool
 
 	refreshCreds := func(reason string) bool {
 		refreshMu.Lock()
@@ -132,6 +152,9 @@ func WorkerGroup(
 			return true
 		}
 
+		hashMu.Lock()
+		hash := tp.Hashes[hashCursor]
+		hashMu.Unlock()
 		getStreamCache(credStreamID).invalidate(credStreamID)
 		if getVkAuthMode() == "account" {
 			invalidateInjectedTurnCreds(hash)
@@ -139,7 +162,7 @@ func WorkerGroup(
 		u, p, urls, refreshErr := GetCreds(ctx, hash, credStreamID)
 		if refreshErr != nil {
 			log.Printf("[TURN] Не удалось обновить креды после %s: %v", reason, refreshErr)
-			return false
+			return rotateCredsLocked(reason)
 		}
 
 		credsMu.Lock()
@@ -148,6 +171,42 @@ func WorkerGroup(
 		lastCredRefresh.Store(time.Now().Unix())
 		log.Printf("[TURN] Креды обновлены после %s, TURN urls=%d", reason, len(urls))
 		return true
+	}
+
+	// rotateCredsLocked переключает группу на следующий VK-хеш. Вызывается
+	// под refreshMu. Недоступность одного хеша не должна останавливать весь
+	// узел: пока есть другие, группа продолжает работать.
+	rotateCredsLocked = func(reason string) bool {
+		if len(tp.Hashes) <= 1 {
+			return false
+		}
+		now := time.Now().Unix()
+		if last := lastHashRotate.Load(); last > 0 && now-last < 5 {
+			return true
+		}
+		hashMu.Lock()
+		hashCursor = (hashCursor + 1) % len(tp.Hashes)
+		hash := tp.Hashes[hashCursor]
+		hashMu.Unlock()
+		getStreamCache(credStreamID).invalidate(credStreamID)
+		u, p, urls, err := GetCreds(ctx, hash, credStreamID)
+		if err != nil {
+			log.Printf("[TURN] Ротация хеша после %s не удалась (%s...): %v", reason, shortHashOf(hash), err)
+			return false
+		}
+		credsMu.Lock()
+		creds = &Credentials{User: u, Pass: p, TurnURLs: urls, CacheStreamID: credStreamID}
+		credsMu.Unlock()
+		lastHashRotate.Store(now)
+		lastCredRefresh.Store(now)
+		log.Printf("[TURN] Группа переключена на хеш %s... после %s", shortHashOf(hash), reason)
+		return true
+	}
+
+	rotateCreds := func(reason string) bool {
+		refreshMu.Lock()
+		defer refreshMu.Unlock()
+		return rotateCredsLocked(reason)
 	}
 
 	// Сигнализируем следующей группе, что мы успешно запустились (креды получены + фора)
@@ -171,153 +230,175 @@ func WorkerGroup(
 	allocateTicker := time.NewTicker(allocateGateInterval)
 	defer allocateTicker.Stop()
 
-	for i, wid := range workerIDs {
-		wg.Add(1)
+	// Группа перезапускает свои воркеры, если они все завершились, а процесс
+	// жив. Это покрывает смерть VK-хеша и сетевые сбои без участия хоста.
+	for {
+		var configRequestInFlight int32
+		var wg sync.WaitGroup
+		for i, wid := range workerIDs {
+			wg.Add(1)
 
-		workerDelay := time.Duration(i) * 75 * time.Millisecond
+			workerDelay := time.Duration(i) * 75 * time.Millisecond
 
-		go func(wid int, delay time.Duration) {
-			defer wg.Done()
+			go func(wid int, delay time.Duration) {
+				defer wg.Done()
 
-			if delay > 0 {
-				select {
-				case <-time.After(delay):
-				case <-ctx.Done():
-					return
-				}
-			}
-
-			shouldGetConfig := getConfig
-			attempt := 0
-			quotaStreak := 0 // сколько раз подряд VK ответил «квота исчерпана»
-
-			for {
-				if ctx.Err() != nil {
-					return
-				}
-
-				getConf := false
-				if shouldGetConfig && atomic.LoadInt32(&configSent) == 0 {
-					getConf = atomic.CompareAndSwapInt32(&configRequestInFlight, 0, 1)
-				}
-				var cc chan<- string
-				if getConf {
-					cc = configCh
-				}
-
-				credsMu.RLock()
-				credsSnapshot := *creds
-				credsSnapshot.TurnURLs = cloneStringSlice(creds.TurnURLs)
-				credsMu.RUnlock()
-
-				sessStarted := time.Now()
-				configDelivered, sessErr := RunSession(ctx, tp, peer, d, localPort,
-					getConf, cc, wid, &credsSnapshot, deviceID, password, stats, allocateTicker.C)
-
-				quotaRetry := false
-				fastRetry := false
-				if getConf {
-					if configDelivered {
-						atomic.StoreInt32(&configSent, 1)
-					} else {
-						atomic.StoreInt32(&configRequestInFlight, 0)
+				if delay > 0 {
+					select {
+					case <-time.After(delay):
+					case <-ctx.Done():
+						return
 					}
 				}
 
-				if sessErr != nil {
+				shouldGetConfig := getConfig
+				attempt := 0
+				quotaStreak := 0 // сколько раз подряд VK ответил «квота исчерпана»
+
+				for {
 					if ctx.Err() != nil {
 						return
 					}
-					errStr := sessErr.Error()
-					errStrLower := strings.ToLower(errStr)
-					fastRetry = strings.Contains(errStrLower, "broken pipe") ||
-						strings.Contains(errStrLower, "connection reset by peer") ||
-						strings.Contains(errStrLower, "unexpected eof")
 
-					turnAllocAttrMissing := strings.Contains(errStrLower, "turn allocate") &&
-						strings.Contains(errStrLower, "attribute not found")
-					isTurnQuota := strings.Contains(errStrLower, "quota") || strings.Contains(errStr, "486")
-					quotaRetry = isTurnQuota
-					turnCredRefreshNeeded := !isTurnQuota && (turnAllocAttrMissing ||
-						strings.Contains(errStrLower, "turn allocate auth") ||
-						strings.Contains(errStrLower, "invalid credential") ||
-						strings.Contains(errStrLower, "stale nonce") ||
-						strings.Contains(errStrLower, "allocation mismatch") ||
-						strings.Contains(errStrLower, "error 508"))
-
-					if hint := workerErrorHint(sessErr); hint != "" {
-						errStr += " | " + hint
-					} else if strings.Contains(errStrLower, "rate limit") ||
-						strings.Contains(errStrLower, "flood control") ||
-						strings.Contains(errStrLower, "ip mismatch") ||
-						strings.Contains(errStrLower, "error 29") {
-						errStr += " (ошибка со стороны ВК)"
+					getConf := false
+					if shouldGetConfig && atomic.LoadInt32(&configSent) == 0 {
+						getConf = atomic.CompareAndSwapInt32(&configRequestInFlight, 0, 1)
+					}
+					var cc chan<- string
+					if getConf {
+						cc = configCh
 					}
 
-					if strings.Contains(errStr, "хеш мёртв") ||
-						strings.Contains(errStr, "FATAL_AUTH") {
-						log.Printf("[ВОРКЕР #%d] Фатальная ошибка: %s", wid, errStr)
-						return
-					}
+					credsMu.RLock()
+					credsSnapshot := *creds
+					credsSnapshot.TurnURLs = cloneStringSlice(creds.TurnURLs)
+					credsMu.RUnlock()
 
-					attempt++
-					if isTurnQuota {
-						quotaStreak++
-						log.Printf("[ВОРКЕР #%d] [TURN] Квота relay исчерпана (%d-й раз подряд), повтор через %v: %s", wid, quotaStreak, quotaRetryDelay(quotaStreak).Truncate(time.Second), errStr)
-						// Повторный отказ: на этих кредах слотов нет — берём
-						// свежие (у них своя квота). В режиме аккаунта VK креды
-						// выдаёт приложение через авторизацию — его не дёргаем.
-						if quotaStreak >= 2 && getVkAuthMode() != "account" {
-							refreshCreds("TURN quota")
+					sessStarted := time.Now()
+					configDelivered, sessErr := RunSession(ctx, tp, peer, d, localPort,
+						getConf, cc, wid, &credsSnapshot, deviceID, password, stats, allocateTicker.C)
+
+					quotaRetry := false
+					fastRetry := false
+					if getConf {
+						if configDelivered {
+							atomic.StoreInt32(&configSent, 1)
+						} else {
+							atomic.StoreInt32(&configRequestInFlight, 0)
 						}
-					} else if turnAllocAttrMissing {
-						log.Printf("[ВОРКЕР #%d] [TURN] Allocate вернул неполный ответ, обновляем TURN-креды и повторяем (попытка %d): %s", wid, attempt, errStr)
-						refreshCreds("TURN Allocate attribute-not-found")
-					} else if turnCredRefreshNeeded {
-						log.Printf("[ВОРКЕР #%d] [TURN] Ошибка allocation/кредов, обновляем TURN-креды и повторяем (попытка %d): %s", wid, attempt, errStr)
-						refreshCreds("TURN allocation error")
-					} else {
-						log.Printf("[ВОРКЕР #%d] Ошибка (попытка %d): %s", wid, attempt, errStr)
 					}
 
-					// Если ошибка STUN (credentials invalid), воркер не сможет переподключиться. Завершаем.
-					isStunDeath := strings.Contains(errStrLower, "error 29") ||
-						strings.Contains(errStrLower, "cannot create socket")
+					if sessErr != nil {
+						if ctx.Err() != nil {
+							return
+						}
+						errStr := sessErr.Error()
+						errStrLower := strings.ToLower(errStr)
+						fastRetry = strings.Contains(errStrLower, "broken pipe") ||
+							strings.Contains(errStrLower, "connection reset by peer") ||
+							strings.Contains(errStrLower, "unexpected eof")
 
-					if isStunDeath {
-						log.Printf("[ВОРКЕР #%d] Невосстановимая TURN/STUN ошибка, завершение: %s", wid, errStr)
+						turnAllocAttrMissing := strings.Contains(errStrLower, "turn allocate") &&
+							strings.Contains(errStrLower, "attribute not found")
+						isTurnQuota := strings.Contains(errStrLower, "quota") || strings.Contains(errStr, "486")
+						quotaRetry = isTurnQuota
+						turnCredRefreshNeeded := !isTurnQuota && (turnAllocAttrMissing ||
+							strings.Contains(errStrLower, "turn allocate auth") ||
+							strings.Contains(errStrLower, "invalid credential") ||
+							strings.Contains(errStrLower, "stale nonce") ||
+							strings.Contains(errStrLower, "allocation mismatch") ||
+							strings.Contains(errStrLower, "error 508"))
+
+						if hint := workerErrorHint(sessErr); hint != "" {
+							errStr += " | " + hint
+						} else if strings.Contains(errStrLower, "rate limit") ||
+							strings.Contains(errStrLower, "flood control") ||
+							strings.Contains(errStrLower, "ip mismatch") ||
+							strings.Contains(errStrLower, "error 29") {
+							errStr += " (ошибка со стороны ВК)"
+						}
+
+						if strings.Contains(errStr, "FATAL_AUTH") {
+							log.Printf("[ВОРКЕР #%d] Фатальная авторизация: %s", wid, errStr)
+							return
+						}
+						if strings.Contains(errStr, "хеш мёртв") {
+							log.Printf("[ВОРКЕР #%d] VK-хеш недоступен, переключаю группу: %s", wid, errStr)
+							if rotateCreds("мёртвый хеш") {
+								attempt++
+								continue
+							}
+							return
+						}
+
+						attempt++
+						if isTurnQuota {
+							quotaStreak++
+							log.Printf("[ВОРКЕР #%d] [TURN] Квота relay исчерпана (%d-й раз подряд), повтор через %v: %s", wid, quotaStreak, quotaRetryDelay(quotaStreak).Truncate(time.Second), errStr)
+							// Повторный отказ: на этих кредах слотов нет — берём
+							// свежие (у них своя квота). В режиме аккаунта VK креды
+							// выдаёт приложение через авторизацию — его не дёргаем.
+							if quotaStreak >= 2 && getVkAuthMode() != "account" {
+								refreshCreds("TURN quota")
+							}
+						} else if turnAllocAttrMissing {
+							log.Printf("[ВОРКЕР #%d] [TURN] Allocate вернул неполный ответ, обновляем TURN-креды и повторяем (попытка %d): %s", wid, attempt, errStr)
+							refreshCreds("TURN Allocate attribute-not-found")
+						} else if turnCredRefreshNeeded {
+							log.Printf("[ВОРКЕР #%d] [TURN] Ошибка allocation/кредов, обновляем TURN-креды и повторяем (попытка %d): %s", wid, attempt, errStr)
+							refreshCreds("TURN allocation error")
+						} else {
+							log.Printf("[ВОРКЕР #%d] Ошибка (попытка %d): %s", wid, attempt, errStr)
+						}
+
+						// Если ошибка STUN (credentials invalid), воркер не сможет переподключиться. Завершаем.
+						isStunDeath := strings.Contains(errStrLower, "error 29") ||
+							strings.Contains(errStrLower, "cannot create socket")
+
+						if isStunDeath {
+							log.Printf("[ВОРКЕР #%d] Невосстановимая TURN/STUN ошибка, завершение: %s", wid, errStr)
+							return
+						}
+					}
+
+					if ctx.Err() != nil {
+						return
+					}
+
+					// Поток поработал и упал — это новый сбой, а не серия неудач.
+					if time.Since(sessStarted) > 60*time.Second {
+						attempt = 1
+					}
+					if !quotaRetry {
+						quotaStreak = 0
+					}
+					retryDelay := workerRetryDelay(attempt)
+					if quotaRetry {
+						retryDelay = quotaRetryDelay(quotaStreak)
+					} else if fastRetry {
+						retryDelay = time.Duration(1+rand.Intn(3)) * time.Second
+					}
+					select {
+					case <-time.After(retryDelay):
+					case <-ctx.Done():
 						return
 					}
 				}
+			}(wid, workerDelay)
+		}
 
-				if ctx.Err() != nil {
-					return
-				}
-
-				// Поток поработал и упал — это новый сбой, а не серия неудач.
-				if time.Since(sessStarted) > 60*time.Second {
-					attempt = 1
-				}
-				if !quotaRetry {
-					quotaStreak = 0
-				}
-				retryDelay := workerRetryDelay(attempt)
-				if quotaRetry {
-					retryDelay = quotaRetryDelay(quotaStreak)
-				} else if fastRetry {
-					retryDelay = time.Duration(1+rand.Intn(3)) * time.Second
-				}
-				select {
-				case <-time.After(retryDelay):
-				case <-ctx.Done():
-					return
-				}
-			}
-		}(wid, workerDelay)
+		wg.Wait()
+		if ctx.Err() != nil {
+			return
+		}
+		log.Printf("[ГРУППА #%d] Все воркеры группы завершились, перезапуск.", groupID)
+		rotateCreds("завершение группы")
+		select {
+		case <-time.After(workerRetryDelay(1)):
+		case <-ctx.Done():
+			return
+		}
 	}
-
-	wg.Wait()
-	log.Printf("[ГРУППА #%d] Все воркеры группы завершились.", groupID)
 }
 
 // ParseHashes — парсит строку хешей
@@ -386,4 +467,22 @@ type Credentials struct {
 	Pass          string
 	TurnURLs      []string
 	CacheStreamID int
+}
+
+// groupSizes делит воркеров на группы по workersPerGroup. Последняя группа
+// может быть неполной, а единственный воркер образует группу из одного.
+func groupSizes(total int) []int {
+	if total < 1 {
+		return nil
+	}
+	sizes := make([]int, 0, (total+workersPerGroup-1)/workersPerGroup)
+	for total > 0 {
+		size := workersPerGroup
+		if total < size {
+			size = total
+		}
+		sizes = append(sizes, size)
+		total -= size
+	}
+	return sizes
 }

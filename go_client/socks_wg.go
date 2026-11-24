@@ -164,6 +164,16 @@ func startUserspaceWireGuard(conf string) (*device.Device, *netstack.Net, error)
 	if err != nil {
 		return nil, nil, err
 	}
+	return startUserspaceWireGuardConfig(cfg, nil)
+}
+
+// startUserspaceWireGuardConfig позволяет заменить DNS из WG-конфига на
+// выбранный пользователем. Явный DNS профиля имеет приоритет над DNS,
+// который выдал сервер.
+func startUserspaceWireGuardConfig(cfg *wgQuickConfig, dns []netip.Addr) (*device.Device, *netstack.Net, error) {
+	if len(dns) > 0 {
+		cfg.dns = dns
+	}
 	tunDev, tnet, err := netstack.CreateNetTUN(cfg.addresses, cfg.dns, cfg.mtu)
 	if err != nil {
 		return nil, nil, fmt.Errorf("CreateNetTUN: %w", err)

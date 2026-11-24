@@ -88,10 +88,12 @@ type WorkerSlot struct {
 
 type Dispatcher struct {
 	localConn     net.PacketConn
-	tunFile       *os.File // не nil в -mode rawtun: сырые IP-пакеты вместо локального WG-loopback
+	packetConn    net.PacketConn // netstack TUN в SOCKS raw-ip: сырые IP-пакеты
+	tunFile       *os.File       // не nil в -mode rawtun: TUN fd от Android
+	rawPackets    bool           // источник отдаёт IP-пакеты, а не UDP-датаграммы
 	ready         chan struct{}
 	clientAddr    atomic.Pointer[net.Addr]
-	pinner        flowPinner // мелкие UDP-потоки → один воркер (только rawtun), см. flow_pin.go
+	pinner        flowPinner // мелкие UDP-потоки → один воркер (raw-IP), см. flow_pin.go
 	mu            sync.Mutex
 	workers       []*WorkerSlot
 	rrIndex       int
@@ -163,6 +165,17 @@ func NewDispatcherPendingTUN(ctx context.Context, stats *Stats) *Dispatcher {
 // диспетчеру и снимает блокировку с readLoop/writeLoop.
 func (d *Dispatcher) AttachTUN(f *os.File) {
 	d.tunFile = f
+	d.rawPackets = true
+	close(d.ready)
+}
+
+// AttachPacketConn подключает userspace netstack в SOCKS raw-IP режиме.
+// Устройство закрывается по отмене контекста, иначе readLoop навсегда
+// останется в blocking Read и Shutdown зависнет.
+func (d *Dispatcher) AttachPacketConn(conn net.PacketConn) {
+	d.packetConn = conn
+	d.rawPackets = true
+	context.AfterFunc(d.ctx, func() { _ = conn.Close() })
 	close(d.ready)
 }
 
@@ -222,6 +235,9 @@ func (d *Dispatcher) readLoop() {
 	if d.tunFile != nil {
 		rawDiagf("readLoop: разблокирован, начинаю читать из tunFile (fd=%v)", d.tunFile.Fd())
 	}
+	if d.packetConn != nil {
+		rawDiagf("readLoop: разблокирован, читаю IP-пакеты из netstack")
+	}
 
 	buf := make([]byte, readBufSize)
 	for {
@@ -232,9 +248,12 @@ func (d *Dispatcher) readLoop() {
 		var n int
 		var addr net.Addr
 		var err error
-		if d.tunFile != nil {
+		switch {
+		case d.tunFile != nil:
 			n, err = d.tunFile.Read(buf)
-		} else {
+		case d.packetConn != nil:
+			n, addr, err = d.packetConn.ReadFrom(buf)
+		default:
 			n, addr, err = d.localConn.ReadFrom(buf)
 		}
 		if err != nil {
@@ -252,12 +271,12 @@ func (d *Dispatcher) readLoop() {
 			continue
 		}
 
-		if d.tunFile == nil {
+		if !d.rawPackets {
 			d.clientAddr.Store(&addr)
 		}
 		d.stats.TotalBytesUp.Add(int64(n))
 
-		if d.tunFile != nil {
+		if d.rawPackets {
 			c := atomic.AddUint64(&d.tunReadCount, 1)
 			if c%200 == 0 {
 				rawDiagf("readLoop: прочитано из TUN=%d отправлено=%d дропнуто=%d",
@@ -266,8 +285,8 @@ func (d *Dispatcher) readLoop() {
 		}
 
 		if atomic.CompareAndSwapUint32(&d.firstPktUp, 0, 1) {
-			if d.tunFile != nil {
-				log.Printf("[ДИСП] [ДЕБАГ] Получен ПЕРВЫЙ пакет от TUN (%d байт)", n)
+			if d.rawPackets {
+				log.Printf("[ДИСП] [ДЕБАГ] Получен ПЕРВЫЙ IP-пакет от TUN (%d байт)", n)
 			} else {
 				log.Printf("[ДИСП] [ДЕБАГ] Получен ПЕРВЫЙ пакет от локального WireGuard (%d байт) с адреса %s", n, addr.String())
 			}
@@ -298,7 +317,7 @@ func (d *Dispatcher) readLoop() {
 
 		// rawtun: мелкий UDP (игры, голос, DNS) держим на одном воркере,
 		// чтобы пакеты одного потока не перемешивались между relay.
-		if d.tunFile != nil && d.pinner.send(d.workers, pkt, now) {
+		if d.rawPackets && d.pinner.send(d.workers, pkt, now) {
 			atomic.AddUint64(&d.tunSentCount, 1)
 			d.mu.Unlock()
 			continue
@@ -381,7 +400,7 @@ func (d *Dispatcher) readLoop() {
 		}
 
 		if sent {
-			if d.tunFile != nil {
+			if d.rawPackets {
 				atomic.AddUint64(&d.tunSentCount, 1)
 			}
 		} else {
@@ -389,7 +408,7 @@ func (d *Dispatcher) readLoop() {
 			d.rrIndex = (idx + 1) % nw
 			d.rrCount = 0
 			putPktBuf(pkt)
-			if d.tunFile != nil {
+			if d.rawPackets {
 				c := atomic.AddUint64(&d.tunDroppedCount, 1)
 				if c == 1 || c%50 == 0 {
 					rawDiagf("readLoop: пакет из TUN ДРОПНУТ — все воркеры перегружены (дропнуто всего=%d)", c)
@@ -414,17 +433,23 @@ func (d *Dispatcher) writeLoop() {
 		case <-d.ctx.Done():
 			return
 		case pkt := <-d.ReturnCh:
-			if d.tunFile != nil {
+			if d.rawPackets {
 				if atomic.CompareAndSwapUint32(&d.firstPktDown, 0, 1) {
-					log.Printf("[ДИСП] [ДЕБАГ] Отправляем ПЕРВЫЙ пакет обратно в TUN (%d байт)", len(pkt))
+					log.Printf("[ДИСП] [ДЕБАГ] Отправляем ПЕРВЫЙ IP-пакет обратно в TUN (%d байт)", len(pkt))
 				}
-				if _, err := d.tunFile.Write(pkt); err != nil {
+				var err error
+				if d.tunFile != nil {
+					_, err = d.tunFile.Write(pkt)
+				} else {
+					_, err = d.packetConn.WriteTo(pkt, nil)
+				}
+				if err != nil {
 					if d.ctx.Err() != nil {
 						putPktBuf(pkt)
 						return
 					}
 					if atomic.CompareAndSwapUint32(&d.firstWriteErr, 0, 1) {
-						rawDiagf("writeLoop: первая ошибка записи в tunFile: %v", err)
+						rawDiagf("writeLoop: первая ошибка записи в TUN: %v", err)
 					}
 				}
 				d.stats.TotalBytesDown.Add(int64(len(pkt)))

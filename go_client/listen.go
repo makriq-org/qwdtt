@@ -22,3 +22,14 @@ func listenUDP(addr string) (net.PacketConn, error) {
 	}
 	return lc.ListenPacket(context.Background(), "udp", addr)
 }
+
+// reuseAddrControl позволяет быстро перезапустить процесс на том же порту.
+func reuseAddrControl(_, _ string, c syscall.RawConn) error {
+	var setErr error
+	if err := c.Control(func(fd uintptr) {
+		setErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+	}); err != nil {
+		return err
+	}
+	return setErr
+}
