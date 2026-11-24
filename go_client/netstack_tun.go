@@ -227,19 +227,23 @@ func effectiveDNS(explicit, fallback string, tunnelProvided []netip.Addr) ([]dns
 			return endpoints, nil
 		}
 	}
-	if endpoints := systemDNSEndpoints(); len(endpoints) > 0 {
-		return endpoints, nil
-	}
+	// DNS, выданный сервером (WireGuard/RAWCONF), гарантированно достижим
+	// внутри туннеля. Физический DNS телефона (10.0.2.3, DNS оператора)
+	// находится вне туннеля и для netstack бесполезен, поэтому используется
+	// только как последний резерв.
 	var result []dnsEndpoint
 	for _, ip := range tunnelProvided {
 		if ip.IsValid() && !ip.IsUnspecified() {
 			result = append(result, dnsEndpoint{addr: ip.Unmap(), port: 53})
 		}
 	}
-	if len(result) == 0 {
-		return nil, errors.New("no DNS server available for the tunnel")
+	if len(result) > 0 {
+		return result, nil
 	}
-	return result, nil
+	if endpoints := systemDNSEndpoints(); len(endpoints) > 0 {
+		return endpoints, nil
+	}
+	return nil, errors.New("no DNS server available for the tunnel")
 }
 
 func dnsAddresses(endpoints []dnsEndpoint) []netip.Addr {
