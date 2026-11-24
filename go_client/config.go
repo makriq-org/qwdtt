@@ -16,6 +16,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
 	"strconv"
@@ -102,7 +103,8 @@ func readClientConfig(path string) (*clientFileConfig, error) {
 	if err = decoder.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("config JSON: %w", err)
 	}
-	if decoder.More() {
+	var extra json.RawMessage
+	if err = decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		return nil, errors.New("config JSON has trailing data")
 	}
 	return &cfg, nil
@@ -191,6 +193,7 @@ func (c *clientFileConfig) apply(o *clientOptions, explicit map[string]bool) err
 	}
 	if c.Listen != "" {
 		set("listen", func() { o.Listen = c.Listen })
+		o.listenConfigured = true
 	}
 	if c.Socks != nil {
 		if c.Socks.Listen != "" {
@@ -319,6 +322,8 @@ type clientOptions struct {
 	DiagAuto      bool
 	DiagTrigger   string
 	DNSServer     string
+
+	listenConfigured bool
 }
 
 func (o *clientOptions) tunnelMode() (string, error) {

@@ -41,6 +41,7 @@ func TestConfigFileAppliesWithoutFlags(t *testing.T) {
 		"turn-servers":   []string{"192.0.2.10", "192.0.2.20:443"},
 		"turn-port":      3478,
 		"dns-server":     "1.1.1.1:5353",
+		"listen":         "127.0.0.1:19000",
 		"socks": map[string]any{
 			"listen":    "127.0.0.1:36500",
 			"username":  "user",
@@ -69,6 +70,9 @@ func TestConfigFileAppliesWithoutFlags(t *testing.T) {
 	if opts.SocksAddr != "127.0.0.1:36500" || !opts.SocksAuth || !opts.UDPToken || opts.DNSServer != "1.1.1.1:5353" {
 		t.Fatalf("unexpected socks: %+v", opts)
 	}
+	if opts.Listen != "127.0.0.1:19000" || !opts.listenConfigured {
+		t.Fatalf("configured WireGuard listener lost: %+v", opts)
+	}
 	if err = opts.validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -82,6 +86,16 @@ func TestConfigFileRejectsLoosePermissions(t *testing.T) {
 	path := writeConfig(t, map[string]any{"mode": "socks"}, 0644)
 	if _, err := readClientConfig(path); err == nil {
 		t.Fatal("world-readable config must be rejected")
+	}
+}
+
+func TestConfigFileRejectsTrailingJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qwdtt.json")
+	if err := os.WriteFile(path, []byte(`{"mode":"socks"}{"mode":"vpn"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readClientConfig(path); err == nil {
+		t.Fatal("trailing JSON accepted")
 	}
 }
 

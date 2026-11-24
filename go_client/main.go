@@ -180,11 +180,11 @@ func main() {
 			log.Fatalf("[КЛИЕНТ] Конфигурация: %v", err)
 		}
 		// Процесс из конфигурации работает без пользователя и WebView:
-		// единственный допустимый автоматический решатель — нативный.
-		if !explicit["captcha-mode"] && opts.CaptchaMode == "auto" {
+		// единственный допустимый решатель — нативный.
+		if !explicit["captcha-mode"] {
 			opts.CaptchaMode = "native"
 		}
-		if !explicit["listen"] {
+		if !explicit["listen"] && !opts.listenConfigured {
 			opts.Listen = "127.0.0.1:0"
 		}
 		if opts.Mode == "socks" && !opts.SocksAuth {

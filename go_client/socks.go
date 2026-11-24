@@ -351,7 +351,7 @@ func (s *socksServer) handleUDP(ctx context.Context, control net.Conn, target so
 	}
 	token := ""
 	if s.cfg.UDPToken {
-		token = strings.ToLower(target.host)
+		token = target.host
 		if target.port != 0 || len(token) != 32 {
 			writeSocksReply(control, socksRepNotAllowed, netip.AddrPort{})
 			return
@@ -392,10 +392,11 @@ type udpAssociation struct {
 	mu      sync.Mutex
 	targets map[netip.AddrPort]*udpTarget
 	closed  bool
+	done    chan struct{}
 }
 
 func newUDPAssociation(ctx context.Context, server *socksServer, token []byte) *udpAssociation {
-	return &udpAssociation{ctx: ctx, server: server, token: token, targets: map[netip.AddrPort]*udpTarget{}}
+	return &udpAssociation{ctx: ctx, server: server, token: token, targets: map[netip.AddrPort]*udpTarget{}, done: make(chan struct{})}
 }
 
 func (a *udpAssociation) listen(control net.Conn) error {
@@ -585,6 +586,8 @@ func (a *udpAssociation) reapLoop() {
 		select {
 		case <-a.ctx.Done():
 			return
+		case <-a.done:
+			return
 		case <-ticker.C:
 			cutoff := time.Now().Add(-socksUDPIdleTimeout)
 			a.mu.Lock()
@@ -606,6 +609,7 @@ func (a *udpAssociation) close() {
 		return
 	}
 	a.closed = true
+	close(a.done)
 	entries := make([]*udpTarget, 0, len(a.targets))
 	for _, entry := range a.targets {
 		entries = append(entries, entry)
